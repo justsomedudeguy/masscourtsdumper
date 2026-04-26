@@ -1,0 +1,16 @@
+{
+  "name": "masscourtsdumper",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "jsdom": "^27.3.0",
+    "patchright": "^1.57.0"
+  }
+}
