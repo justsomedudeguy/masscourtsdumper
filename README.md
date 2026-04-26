@@ -1,6 +1,8 @@
 # masscourtdumper
 
-`masscourtdumper` is a small Node.js toolkit for exporting Massachusetts Trial Court case materials from an already authenticated `masscourts.org` browser session.
+`masscourtdumper` is a small Node.js toolkit for exporting Massachusetts Trial Court case materials from a MassCourts page that you have already opened in a browser.
+
+The dumper does not use or require an authenticated MassCourts session. Public MassCourts search does not offer normal account login for this workflow, except for attorney access. You must manually pass the initial CAPTCHA and navigate to the specific case page you want before running the dumper.
 
 The repository currently contains two main workflows:
 
@@ -11,53 +13,62 @@ The repository currently contains two main workflows:
 
 ## Requirements
 
-- Windows / PowerShell for the bundled `launch_chrome.ps1` helper.
 - Node.js 20+ recommended.
   `jsdom@27` requires a modern Node runtime; the current workspace is using Node `v22.17.0`.
 - A Chromium-based browser launched with remote debugging on `http://localhost:9222`.
-- A valid MassCourts login for the `dumper.js` workflow.
+- A manually opened MassCourts Case Details page.
+  You need to pass the initial CAPTCHA and navigate to the case yourself before running `dumper.js`.
+
+The Node.js scripts are intended to be operating-system agnostic. The only OS-specific part is how you launch a local Chromium-based browser with the remote debugging flag.
 
 ## Install
 
-```powershell
+```sh
 npm install
 ```
 
 ## Main Workflow: Dump a MassCourts Case
 
-1. Launch a Chromium browser with remote debugging enabled.
+1. Launch a Chromium-based browser with remote debugging enabled.
 
-   The repo includes [launch_chrome.ps1](./launch_chrome.ps1), but it uses a hard-coded browser path:
+   Windows Command Prompt:
 
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\launch_chrome.ps1
+   ```bat
+   chrome --remote-debugging-port=9222 --user-data-dir="%USERPROFILE%/chrome_dumper_profile"
    ```
 
-   If that script does not match your local browser path, edit it or launch Chromium manually with equivalent flags:
+   macOS:
 
-   ```powershell
-   & "C:\Path\To\chrome.exe" `
-     --remote-debugging-port=9222 `
-     --user-data-dir="$env:USERPROFILE\chrome_dumper_profile"
+   ```sh
+   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=9222 --user-data-dir="$HOME/chrome_dumper_profile"
    ```
+
+   Linux:
+
+   ```sh
+   google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/chrome_dumper_profile"
+   ```
+
+   If your browser executable is not on `PATH`, use the full local path to Chrome, Chromium, Edge, or another Chromium-based browser.
 
 2. In that browser session:
 
-- Log in to `masscourts.org`.
-- Open the specific `Case Details` page you want to export.
+   - Open MassCourts.
+   - Pass the initial CAPTCHA manually.
+   - Search for and open the specific `Case Details` page you want to export.
 
 3. Run the dumper:
 
-```powershell
-node .\dumper.js
+```sh
+node ./dumper.js
 ```
 
-4. Review the generated folder under `output\`.
+4. Review the generated folder under `output/`.
 
 Each case is saved into a directory named roughly:
 
 ```text
-output\<case-id>-<case-title>\
+output/<case-id>-<case-title>/
 ```
 
 Typical contents:
@@ -68,11 +79,11 @@ Typical contents:
 
 ## Dumper Behavior
 
-`dumper.js` is designed around the current MassCourts UI and session model.
+`dumper.js` is designed around the current MassCourts UI and browser-session model.
 
 - It connects to `http://localhost:9222` over CDP.
-- It searches the existing tabs for a MassCourts Case Details page.
-- It aborts if the session appears logged out or expired.
+- It searches the existing browser tabs for a MassCourts Case Details page.
+- It expects the CAPTCHA and case search steps to have been completed manually before it starts.
 - It locates the docket table by header text, then iterates document links with selector `a.dktImage`.
 - It uses several capture strategies for each PDF:
   route interception, response listeners, download listeners, popup handling, and cookie-backed refetches.
@@ -96,33 +107,39 @@ Typical contents:
   Default: `200`
   Poll interval while waiting for a captured PDF buffer.
 
-Example:
+Windows Command Prompt example:
 
-```powershell
-$env:MAX_DOC_WAIT_MS = "60000"
-$env:CLICK_RETRY_MS = "15000"
-node .\dumper.js
+```bat
+set MAX_DOC_WAIT_MS=60000
+set CLICK_RETRY_MS=15000
+node ./dumper.js
+```
+
+macOS and Linux example:
+
+```sh
+MAX_DOC_WAIT_MS=60000 CLICK_RETRY_MS=15000 node ./dumper.js
 ```
 
 ## Post-Processing Existing Dumps
 
 Run `datacleanup.js` to normalize saved docket links and rename files/directories based on the current docket HTML:
 
-```powershell
-node .\datacleanup.js
+```sh
+node ./datacleanup.js
 ```
 
-This script scans each subdirectory under `output\`, updates `docket.html`, renames PDFs to `NNN_<docket_text>.pdf`, and may rename the case folder itself.
+This script scans each subdirectory under `output/`, updates `docket.html`, renames PDFs to `NNN_<docket_text>.pdf`, and may rename the case folder itself.
 
 ## Secondary Workflow: Generic Website to PDF
 
 `simplescrape.js` is separate from the MassCourts workflow.
 
-```powershell
-node .\simplescrape.js
+```sh
+node ./simplescrape.js
 ```
 
-The script prompts for a starting URL, loads the page in a headless browser, discovers links, then generates a single PDF in `output\` named like:
+The script prompts for a starting URL, loads the page in a headless browser, discovers links, then generates a single PDF in `output/` named like:
 
 ```text
 simplescrape_<host>_<timestamp>.pdf
@@ -143,12 +160,18 @@ Environment variables:
 - `MAX_LINKS`
   Limit the number of discovered links included after the main page.
 
-Example:
+Windows Command Prompt example:
 
-```powershell
-$env:INCLUDE_EXTERNAL = "1"
-$env:MAX_LINKS = "25"
-node .\simplescrape.js
+```bat
+set INCLUDE_EXTERNAL=1
+set MAX_LINKS=25
+node ./simplescrape.js
+```
+
+macOS and Linux example:
+
+```sh
+INCLUDE_EXTERNAL=1 MAX_LINKS=25 node ./simplescrape.js
 ```
 
 ## Utility Scripts
@@ -164,11 +187,10 @@ These scripts are useful for debugging but are not the supported main interface:
 ## Known Constraints
 
 - The main dumper depends on the live MassCourts page structure and current selectors.
-- Authentication is manual; the repo does not automate login.
-- `launch_chrome.ps1` is machine-specific as checked in.
+- CAPTCHA completion and case navigation are manual; the repo does not automate them.
 - `dumper.js` disables TLS certificate validation for its direct-fetch fallback.
 - The repo does not currently include automated tests or a productionized CLI.
-- Output files may contain sensitive court records. Treat `output\` as sensitive local data.
+- Output files may contain sensitive court records. Treat `output/` as sensitive local data.
 
 ## Project Spec
 
