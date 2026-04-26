@@ -1,10 +1,11 @@
-# masscourtdumper
+# masscourtsdumper
 
-`masscourtdumper` is a small Node.js toolkit for exporting Massachusetts Trial Court case materials from a MassCourts page that you have already opened in a browser.
+`masscourtsdumper` is a small Node.js toolkit for exporting Massachusetts Trial Court case materials from a MassCourts page that you have already opened in a browser.
 
 The dumper does not use or require an authenticated MassCourts session. Public MassCourts search does not offer normal account login for this workflow, except for attorney access. You must manually pass the initial CAPTCHA and navigate to the specific case page you want before running the dumper.
 
 The repository currently contains two main workflows:
+!You might want to use a VPN when running this!
 
 - `dumper.js`: attach to a running Chromium session, detect the open MassCourts Case Details page, and save the docket HTML plus linked PDFs into `output/`.
 - `simplescrape.js`: prompt for a URL, crawl the main page plus discovered links, and render the result into a single PDF.
@@ -19,7 +20,7 @@ The repository currently contains two main workflows:
 - A manually opened MassCourts Case Details page.
   You need to pass the initial CAPTCHA and navigate to the case yourself before running `dumper.js`.
 
-The Node.js scripts are intended to be operating-system agnostic. The only OS-specific part is how you launch a local Chromium-based browser with the remote debugging flag.
+The Node.js scripts work on Windows, Mac and Linux. The only OS-specific part is how you launch a local Chromium-based browser with the remote debugging flag.
 
 ## Install
 
@@ -122,6 +123,7 @@ MAX_DOC_WAIT_MS=60000 CLICK_RETRY_MS=15000 node ./dumper.js
 ```
 
 ## Post-Processing Existing Dumps
+note: Usually this step is not needed
 
 Run `datacleanup.js` to normalize saved docket links and rename files/directories based on the current docket HTML:
 
@@ -132,7 +134,7 @@ node ./datacleanup.js
 This script scans each subdirectory under `output/`, updates `docket.html`, renames PDFs to `NNN_<docket_text>.pdf`, and may rename the case folder itself.
 
 ## Secondary Workflow: Generic Website to PDF
-
+note: Usefull for dumping the Massachusetts Appeals Court website for example
 `simplescrape.js` is separate from the MassCourts workflow.
 
 ```sh
@@ -182,7 +184,6 @@ These scripts are useful for debugging but are not the supported main interface:
 - `debug_links.js`: print sample MassCourts document-link attributes and network requests.
 - `test_route.js`: minimal routing test for a CDP-attached session.
 - `tmp_fetch.js`: experimental fetch against a specific MassCourts URL using browser cookies.
-- `test_pw.js`: Playwright connection test; note that it imports `playwright`, which is not declared in `package.json`.
 
 ## Known Constraints
 
