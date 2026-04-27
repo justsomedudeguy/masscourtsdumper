@@ -14,9 +14,9 @@ Requirement language:
 
 ## 1. Purpose
 
-`masscourtdumper` exports docket HTML and linked PDFs from a Massachusetts Trial Court MassCourts case page that the operator has already opened in a browser.
+`masscourtdumper` exports docket HTML and linked PDFs from a supported court case page that the operator has already opened in a browser. It currently supports Massachusetts Trial Court MassCourts pages and Nevada Appellate Courts Case View pages.
 
-The dumper attaches to an existing Chromium-based browser session over CDP. It does not automate CAPTCHA completion, MassCourts search, case navigation, account login, or access-control bypasses.
+The dumper attaches to an existing Chromium-based browser session over CDP. It does not automate CAPTCHA completion, court-portal search, case navigation, account login, or access-control bypasses.
 
 Public MassCourts search does not require a normal authenticated account session for this workflow, except for attorney access. The operator must manually pass the initial CAPTCHA and navigate to the specific `Case Details` page before running the dumper.
 
@@ -24,7 +24,7 @@ Public MassCourts search does not require a normal authenticated account session
 
 | Workflow | Script | Status | Inputs | Outputs |
 | --- | --- | --- | --- | --- |
-| MassCourts case dump | `dumper.js` | Primary workflow | Chromium at `http://localhost:9222`, completed CAPTCHA, open `Case Details` tab | `output/<case-id>-<case-title>/docket.html`, one PDF per downloadable docket entry, optional `stub_*.html` or `stub_*.xml` debug artifacts |
+| Supported case dump | `dumper.js` | Primary workflow | Chromium at `http://localhost:9222`, completed CAPTCHA/manual navigation when required, open MassCourts `Case Details` or Nevada `Case View` tab | `output/<case-id>-<case-title>/docket.html`, one PDF per downloadable docket entry, optional `stub_*.html` or `stub_*.xml` debug artifacts |
 | Dump cleanup / normalization | `datacleanup.js` | Post-processing utility | Existing case folders under `output/` with `docket.html` | Patched local docket links, normalized PDF names, optional case-folder rename |
 | Generic site-to-PDF snapshot | `simplescrape.js` | Separate utility | User-supplied starting URL | One combined PDF under `output/` |
 
@@ -59,7 +59,7 @@ The remaining scripts are ad hoc debugging helpers, not supported interfaces:
 
 The Node.js scripts are intended to be operating-system agnostic. The OS-specific part is how the operator launches a Chromium-based browser with the remote debugging flag.
 
-## 5. MassCourts Dump Functional Spec
+## 5. Supported Case Dump Functional Spec
 
 ### 5.1 Browser Attachment
 
@@ -72,13 +72,14 @@ The Node.js scripts are intended to be operating-system agnostic. The OS-specifi
 
 ### 5.2 Target Page Discovery
 
-The dumper should select the best available MassCourts page by:
+The dumper should select the best available supported case page by:
 
 - preferring a URL containing both `CaseDetails` and `masscourts.org`
-- falling back to page-title heuristics
+- accepting Nevada Appellate Courts URLs containing `caseinfo.nvsupremecourt.us/public/caseView.do`
+- falling back to page-title heuristics for supported portals
 - rejecting CAPTCHA, search, login, and expired-session pages
 
-If no usable MassCourts `Case Details` tab is open, the dumper should stop with an operator-actionable error.
+If no usable supported case tab is open, the dumper should stop with an operator-actionable error.
 
 ### 5.3 Case Metadata Extraction
 
@@ -92,11 +93,17 @@ If extraction fails, the dumper should still create a usable fallback folder nam
 
 ### 5.4 Docket Table Discovery
 
-The dumper should:
+For MassCourts, the dumper should:
 
 - scan page tables
 - identify the docket table by headers containing `docket text` and an image column
 - enumerate only rows containing `a.dktImage`
+
+For Nevada, the dumper should:
+
+- identify the `table.FormTable` headed `Docket Entries`
+- enumerate rows with `document/view.do` links in the `Document` column
+- use the document link text, such as `26-05587`, as the document number
 
 For each document row, it should compute:
 
@@ -115,6 +122,8 @@ MassCourts may expose documents through several delivery paths. The dumper shoul
 4. popup listeners
 5. refetching the last known PDF URL using browser-session cookies
 6. extracting PDF targets from HTML wrappers or Wicket XML responses
+
+Nevada exposes public docket documents as direct `document/view.do` links. The dumper should fetch those links with the headed browser session cookies and verify the resulting buffer begins with `%PDF-`.
 
 Success criteria:
 

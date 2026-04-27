@@ -2,6 +2,12 @@ const { chromium } = require('patchright');
 const { JSDOM } = require('jsdom');
 const fs = require('fs');
 const path = require('path');
+const {
+  detectPortal,
+  extractCaseMetadata,
+  extractDocketEntries,
+  sanitizeCaseTitle,
+} = require('./dumper-utils');
 
 // Allow fetching PDFs even when the host uses a mismatched cert (masscourts.org vs www.masscourts.org)
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
@@ -28,26 +34,22 @@ async function dumpCase() {
     const context = contexts[0];
     const pages = context.pages();
 
-    let page = pages.find(p => p.url().includes('CaseDetails') && p.url().includes('masscourts.org'));
-    if (!page) {
-      console.log('Searching pages for "Case Details" title...');
-      for (const p of pages) {
-        const title = await p.title().catch(() => '');
-        const url = p.url();
-        console.log(` - Page: "${title}" at ${url}`);
-        if (title.includes('Case Details') || title.includes('Massachusetts Trial Court')) {
-          if (url.includes('masscourts.org')) {
-            page = p;
-            break;
-          }
-        }
+    let page = null;
+    let portal = null;
+    console.log('Searching pages for supported court case tabs...');
+    for (const p of pages) {
+      const title = await p.title().catch(() => '');
+      const url = p.url();
+      const detected = detectPortal({ url, title });
+      console.log(` - Page: "${title}" at ${url}${detected ? ` [${detected.label}]` : ''}`);
+      if (detected && !page) {
+        page = p;
+        portal = detected;
       }
     }
 
-    if (!page) page = pages.find(p => p.url().includes('masscourts.org') && !p.url().includes('login'));
-
     if (!page) {
-      console.error('Could not find an open masscourts.org Case Details tab.');
+      console.error('Could not find an open supported case tab. Open a MassCourts Case Details page or Nevada Case View page first.');
       return;
     }
 
@@ -59,28 +61,18 @@ async function dumpCase() {
 
     if (isLoggedOut) {
       console.error('ERROR: You appear to be LOGGED OUT or your session has EXPIRED.');
-      console.error('Please log back in and navigate to the Case Details page in your browser.');
+      console.error('Please log back in and navigate to the case details page in your browser.');
       return;
     }
 
     const pageTitleStr = await page.title();
-    console.log(`Found page: "${pageTitleStr}" at ${page.url()}`);
+    console.log(`Found ${portal.label} page: "${pageTitleStr}" at ${page.url()}`);
 
-    const { caseId, caseTitle } = await page.evaluate(() => {
-      let titleEl = document.querySelector('li.displayData') || document.querySelector('.case-header-info') || document.querySelector('h1 .displayData');
-      if (!titleEl) {
-        const h1s = Array.from(document.querySelectorAll('h1'));
-        titleEl = h1s.find(h => h.innerText.length > 5 && !h.innerText.includes('N2') && !h.innerText.includes('N5'));
-      }
-      const fullText = titleEl ? titleEl.innerText.trim() : '';
-      const match = fullText.match(/^([A-Z0-9-]+)\b\s*[-]?[ \t]*(.*)$/i);
-      if (match) {
-        return { caseId: match[1], caseTitle: match[2]?.trim() || fullText };
-      }
-      return { caseId: 'case_dump', caseTitle: fullText || 'Unknown' };
-    });
+    const docketHtmlTemplate = await page.content().catch(() => '');
+    const pageDom = new JSDOM(docketHtmlTemplate, { url: page.url() });
+    const { caseId, caseTitle } = extractCaseMetadata(pageDom.window.document, portal);
 
-    const safeTitle = caseTitle.replace(/[^a-z0-9, vs. ]/gi, '').substring(0, 50).trim();
+    const safeTitle = sanitizeCaseTitle(caseTitle);
     const outputDirName = `${caseId}-${safeTitle}`;
     const outputDir = path.join(__dirname, 'output', outputDirName);
 
@@ -435,54 +427,32 @@ async function dumpCase() {
       }).catch(() => { });
     });
 
+    const documentLinkSelector = portal.documentMode === 'direct'
+      ? 'a[href*="document/view.do"], a[href*="/document/view.do"]'
+      : 'a.dktImage';
+
     console.log('Waiting for docket links to appear...');
     try {
-      await page.waitForSelector('a.dktImage', { timeout: 10000 });
+      await page.waitForSelector(documentLinkSelector, { timeout: 10000 });
     } catch (e) {
-      console.warn('  Warning: .dktImage selector not found. Checking if page content is correct.');
+      console.warn(`  Warning: ${documentLinkSelector} selector not found. Checking if page content is correct.`);
       const content = await page.content();
-      if (content.includes('Case Details')) {
+      if (content.includes('Case Details') || content.includes('Docket Entries')) {
         console.log('  Page content seems correct, but no document links found.');
       } else {
         console.log('  Page content snippet (first 500 chars):', content.substring(0, 500));
       }
     }
 
-    const entriesRes = await page.evaluate(() => {
-      const tables = Array.from(document.querySelectorAll('table'));
-      const docketTable = tables.find(t => {
-        const headers = Array.from(t.querySelectorAll('th')).map(th => th.innerText.toLowerCase());
-        return headers.some(h => h.includes('docket text')) && headers.some(h => h.includes('image'));
-      });
-      if (!docketTable) return { error: 'Docket table not found.' };
-
-      const headers = Array.from(docketTable.querySelectorAll('th')).map(th => th.innerText.toLowerCase().trim());
-      const textIdx = headers.findIndex(h => h.includes('docket text'));
-      const refIdx = headers.findIndex(h => h.includes('ref nbr') || h.includes('ref #'));
-
-      const rows = Array.from(docketTable.querySelectorAll('tbody tr'));
-      const data = rows.map((row, index) => {
-        const imgLink = row.querySelector('a.dktImage');
-        if (imgLink) {
-          const cells = Array.from(row.querySelectorAll('td'));
-          let docNumStr = (refIdx !== -1) ? (cells[refIdx]?.innerText?.trim() || '') : '';
-          if (!docNumStr || isNaN(parseInt(docNumStr))) docNumStr = (index + 1).toString();
-          const docNum = docNumStr.padStart(3, '0');
-          const textStr = cells[textIdx]?.innerText?.trim().substring(0, 70).replace(/[^a-z0-9]/gi, '_') || 'NoText';
-          return { id: imgLink.id, docNum: docNum, text: textStr };
-        }
-        return null;
-      }).filter(e => e !== null);
-      return { data };
-    });
-
-    if (entriesRes.error) {
-      console.error(`  Extraction Error: ${entriesRes.error}`);
+    let entries;
+    try {
+      const entriesDom = new JSDOM(docketHtmlTemplate, { url: page.url() });
+      entries = extractDocketEntries(entriesDom.window.document, portal);
+    } catch (e) {
+      console.error(`  Extraction Error: ${e.message}`);
       return;
     }
 
-    const docketHtmlTemplate = await page.content().catch(() => '');
-    const entries = entriesRes.data || [];
     console.log(`Found ${entries.length} document links.`);
 
     const successfullyDownloaded = [];
@@ -527,10 +497,20 @@ async function dumpCase() {
           console.warn('    Warning: No docket HTML captured; skipping docket.html patch.');
           return;
         }
-        const dom = new JSDOM(docketHtmlTemplate);
+        const dom = new JSDOM(docketHtmlTemplate, { url: refererUrl });
         const doc = dom.window.document;
         downloads.forEach(dl => {
-          const el = doc.getElementById(dl.id);
+          let el = dl.id ? doc.getElementById(dl.id) : null;
+          if (!el && dl.href) {
+            const targetHref = new URL(dl.href, refererUrl).toString();
+            el = Array.from(doc.querySelectorAll('a[href]')).find(anchor => {
+              try {
+                return new URL(anchor.getAttribute('href'), refererUrl).toString() === targetHref;
+              } catch (_) {
+                return false;
+              }
+            });
+          }
           if (el) {
             el.setAttribute('href', dl.fileName);
             el.removeAttribute('onclick');
@@ -550,71 +530,101 @@ async function dumpCase() {
       const entry = entries[i];
       const fileName = `${entry.docNum}_${entry.text}.pdf`;
       const filePath = path.join(outputDir, fileName);
+      const entryLabel = entry.id || entry.href || entry.docNum;
 
       if (fs.existsSync(filePath)) {
         console.log(`    Skipping [${i + 1}/${entries.length}]: ${fileName}`);
-        successfullyDownloaded.push({ id: entry.id, fileName: fileName });
+        successfullyDownloaded.push({ id: entry.id, href: entry.href, fileName: fileName });
         continue;
       }
 
-      console.log(`Processing [${i + 1}/${entries.length}]: ${entry.id} - #${entry.docNum} - ${entry.text}`);
+      console.log(`Processing [${i + 1}/${entries.length}]: ${entryLabel} - #${entry.docNum} - ${entry.text}`);
 
       try {
         routeInterceptionEnabled = true;
         const preError = await waitForOverlay();
         if (preError) {
-          console.log(`    Skipping ${entry.id}: Error dialog detected before click: ${preError}`);
+          console.log(`    Skipping ${entryLabel}: Error dialog detected before click: ${preError}`);
           continue;
         }
 
         currentPdfBuffer = null;
         lastPdfUrl = null;
-        const pagePromise = context.waitForEvent('page', { timeout: MAX_DOC_WAIT_MS }).catch(() => null);
-        let pdfTabCloseScheduled = false;
-        const schedulePdfTabClose = () => {
-          if (pdfTabCloseScheduled) return;
-          pdfTabCloseScheduled = true;
-          pagePromise.then((pdfPage) => {
-            if (pdfPage && !pdfPage.isClosed()) {
-              pdfPage.close().catch(() => { });
+        let schedulePdfTabClose = () => { };
+        let pdfResponsePromise = Promise.resolve(null);
+
+        if (portal.documentMode === 'direct' && entry.href) {
+          console.log(`  Fetching ${entry.href}...`);
+          lastPdfUrl = entry.href;
+          currentPdfBuffer = await fetchPdfWithCookies(entry.href);
+        } else {
+          const pagePromise = context.waitForEvent('page', { timeout: MAX_DOC_WAIT_MS }).catch(() => null);
+          let pdfTabCloseScheduled = false;
+          schedulePdfTabClose = () => {
+            if (pdfTabCloseScheduled) return;
+            pdfTabCloseScheduled = true;
+            pagePromise.then((pdfPage) => {
+              if (pdfPage && !pdfPage.isClosed()) {
+                pdfPage.close().catch(() => { });
+              }
+            }).catch(() => { });
+          };
+          pdfResponsePromise = page.waitForResponse(res => isPdfResponse(res), { timeout: MAX_DOC_WAIT_MS }).catch(() => null);
+
+          console.log(`  Clicking ${entryLabel}...`);
+          await page.evaluate((target) => {
+            let el = target.id ? document.getElementById(target.id) : null;
+            if (!el && target.href) {
+              const targetHref = new URL(target.href, location.href).toString();
+              el = Array.from(document.querySelectorAll('a[href]')).find(anchor => {
+                try {
+                  return new URL(anchor.getAttribute('href'), location.href).toString() === targetHref;
+                } catch (_) {
+                  return false;
+                }
+              });
             }
-          }).catch(() => { });
-        };
-        const pdfResponsePromise = page.waitForResponse(res => isPdfResponse(res), { timeout: MAX_DOC_WAIT_MS }).catch(() => null);
+            if (el) el.click();
+          }, { id: entry.id, href: entry.href });
 
-        console.log(`  Clicking ${entry.id}...`);
-        await page.evaluate((id) => {
-          const el = document.getElementById(id);
-          if (el) el.click();
-        }, entry.id);
+          const start = Date.now();
+          let lastClickTs = start;
+          let loopError = null;
+          while (!currentPdfBuffer) {
+            loopError = await checkErrorDialog();
+            if (loopError) {
+              console.log(`    Skipping ${entryLabel}: Error dialog detected: ${loopError}`);
+              currentPdfBuffer = 'ERROR';
+              break;
+            }
 
-        const start = Date.now();
-        let lastClickTs = start;
-        let loopError = null;
-        while (!currentPdfBuffer) {
-          loopError = await checkErrorDialog();
-          if (loopError) {
-            console.log(`    Skipping ${entry.id}: Error dialog detected: ${loopError}`);
-            currentPdfBuffer = 'ERROR';
-            break;
+            const elapsed = Date.now() - start;
+            if (elapsed > MAX_DOC_WAIT_MS) {
+              console.log(`    Timeout after ${Math.round(elapsed / 1000)}s waiting for ${entryLabel}`);
+              break;
+            }
+
+            if (Date.now() - lastClickTs > CLICK_RETRY_MS) {
+              console.log(`    Re-clicking ${entryLabel} after ${Math.round(elapsed / 1000)}s...`);
+              await page.evaluate((target) => {
+                let el = target.id ? document.getElementById(target.id) : null;
+                if (!el && target.href) {
+                  const targetHref = new URL(target.href, location.href).toString();
+                  el = Array.from(document.querySelectorAll('a[href]')).find(anchor => {
+                    try {
+                      return new URL(anchor.getAttribute('href'), location.href).toString() === targetHref;
+                    } catch (_) {
+                      return false;
+                    }
+                  });
+                }
+                if (el) el.click();
+              }, { id: entry.id, href: entry.href });
+              lastClickTs = Date.now();
+            }
+
+            await new Promise(r => setTimeout(r, PDF_POLL_MS));
           }
-
-           const elapsed = Date.now() - start;
-           if (elapsed > MAX_DOC_WAIT_MS) {
-             console.log(`    Timeout after ${Math.round(elapsed / 1000)}s waiting for ${entry.id}`);
-             break;
-           }
-
-           if (Date.now() - lastClickTs > CLICK_RETRY_MS) {
-             console.log(`    Re-clicking ${entry.id} after ${Math.round(elapsed / 1000)}s...`);
-             await page.evaluate((id) => {
-               const el = document.getElementById(id);
-               if (el) el.click();
-             }, entry.id);
-             lastClickTs = Date.now();
-           }
-
-          await new Promise(r => setTimeout(r, PDF_POLL_MS));
         }
 
         const directPdfResponse = await pdfResponsePromise;
@@ -640,17 +650,17 @@ async function dumpCase() {
           if (currentPdfBuffer.length > 5 && currentPdfBuffer.slice(0, 5).toString() === '%PDF-') {
             fs.writeFileSync(filePath, currentPdfBuffer);
             console.log(`    Saved: ${fileName} (${currentPdfBuffer.length} bytes)`);
-            successfullyDownloaded.push({ id: entry.id, fileName: fileName });
+            successfullyDownloaded.push({ id: entry.id, href: entry.href, fileName: fileName });
             await patchAndSave(successfullyDownloaded);
             schedulePdfTabClose();
           } else {
-            console.log(`    Error: Downloaded data for ${entry.id} is not a valid PDF.`);
+            console.log(`    Error: Downloaded data for ${entryLabel} is not a valid PDF.`);
             if (lastPdfUrl) {
               const fetched = await fetchPdfWithCookies(lastPdfUrl);
               if (fetched && fetched.length > 5 && fetched.slice(0, 5).toString() === '%PDF-') {
                 fs.writeFileSync(filePath, fetched);
                 console.log(`    Saved via refetch: ${fileName} (${fetched.length} bytes)`);
-                successfullyDownloaded.push({ id: entry.id, fileName: fileName });
+                successfullyDownloaded.push({ id: entry.id, href: entry.href, fileName: fileName });
                 await patchAndSave(successfullyDownloaded);
                 schedulePdfTabClose();
               } else if (fetched) {
@@ -660,7 +670,7 @@ async function dumpCase() {
             }
           }
         } else {
-          console.log(`    Failed to capture PDF for ${entry.id}.`);
+          console.log(`    Failed to capture PDF for ${entryLabel}.`);
         }
       } catch (e) {
         console.error(`  Error: ${e.message}`);

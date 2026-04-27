@@ -1,13 +1,13 @@
 # masscourtsdumper
 
-`masscourtsdumper` is a small Node.js toolkit for exporting Massachusetts Trial Court case materials from a MassCourts page that you have already opened in a browser.
+`masscourtsdumper` is a small Node.js toolkit for exporting court case materials from a supported case page that you have already opened in a browser. It currently supports Massachusetts Trial Court MassCourts pages and Nevada Appellate Courts Case View pages.
 
 The dumper does not use or require an authenticated MassCourts session. Public MassCourts search does not offer normal account login for this workflow, except for attorney access. You must manually pass the initial CAPTCHA and navigate to the specific case page you want before running the dumper.
 
 The repository currently contains two main workflows:
 !You might want to use a VPN when running this!
 
-- `dumper.js`: attach to a running Chromium session, detect the open MassCourts Case Details page, and save the docket HTML plus linked PDFs into `output/`.
+- `dumper.js`: attach to a running Chromium session, detect the open MassCourts Case Details page or Nevada Case View page, and save the docket HTML plus linked PDFs into `output/`.
 - `simplescrape.js`: prompt for a URL, crawl the main page plus discovered links, and render the result into a single PDF.
 
 `datacleanup.js` is a post-processing utility for normalizing case folders and local docket links after a dump.
@@ -17,8 +17,9 @@ The repository currently contains two main workflows:
 - Node.js 20+ recommended.
   `jsdom@27` requires a modern Node runtime; the current workspace is using Node `v22.17.0`.
 - A Chromium-based browser launched with remote debugging on `http://localhost:9222`.
-- A manually opened MassCourts Case Details page.
-  You need to pass the initial CAPTCHA and navigate to the case yourself before running `dumper.js`.
+- A manually opened supported case page.
+  For Massachusetts, pass the initial CAPTCHA and navigate to the MassCourts `Case Details` page yourself before running `dumper.js`.
+  For Nevada, open the Nevada Appellate Courts `Case View` page first.
 
 The Node.js scripts work on Windows, Mac and Linux. The only OS-specific part is how you launch a local Chromium-based browser with the remote debugging flag.
 
@@ -28,7 +29,7 @@ The Node.js scripts work on Windows, Mac and Linux. The only OS-specific part is
 npm install
 ```
 
-## Main Workflow: Dump a MassCourts Case
+## Main Workflow: Dump a Supported Case
 
 1. Launch a Chromium-based browser with remote debugging enabled.
 
@@ -54,9 +55,9 @@ npm install
 
 2. In that browser session:
 
-   - Open MassCourts.
-   - Pass the initial CAPTCHA manually.
-   - Search for and open the specific `Case Details` page you want to export.
+   - Open the supported court portal.
+   - Pass any initial CAPTCHA or manual navigation steps yourself.
+   - Open the specific MassCourts `Case Details` page or Nevada `Case View` page you want to export.
 
 3. Run the dumper:
 
@@ -80,12 +81,13 @@ Typical contents:
 
 ## Dumper Behavior
 
-`dumper.js` is designed around the current MassCourts UI and browser-session model.
+`dumper.js` is designed around the current MassCourts and Nevada Appellate Courts browser-session models.
 
 - It connects to `http://localhost:9222` over CDP.
-- It searches the existing browser tabs for a MassCourts Case Details page.
-- It expects the CAPTCHA and case search steps to have been completed manually before it starts.
-- It locates the docket table by header text, then iterates document links with selector `a.dktImage`.
+- It searches the existing browser tabs for a supported case page.
+- It expects CAPTCHA, case search, and case navigation steps to have been completed manually before it starts.
+- For MassCourts, it locates the docket table by header text, then iterates document links with selector `a.dktImage`.
+- For Nevada, it locates the `Docket Entries` table, then downloads `document/view.do` links directly with browser-session cookies.
 - It uses several capture strategies for each PDF:
   route interception, response listeners, download listeners, popup handling, and cookie-backed refetches.
 - It skips files that already exist, so reruns are partially resumable.
